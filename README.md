@@ -7,7 +7,7 @@ Java 21, Spring Boot, PostgreSQL, Kafka, Keycloak; интерфейс-- Vue 3 и
 
 ## Запуск backend
 
-Перед запуском заполните `.env` по образцу `.env.example`.
+Перед запуском заполните `.env` по образцу `.env.example`. Я осознанно не стал коммитить .env файл, хоть это и тестовый локальный проект
 
 ```bash
 docker compose up -d --build
