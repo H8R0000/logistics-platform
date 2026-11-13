@@ -22,3 +22,17 @@
 # virtual machine crash logs, see http://www.java.com/en/download/help/error_hotspot.xml
 hs_err_pid*
 replay_pid*
+
+.idea/
+*.iml
+**/target/
+.env
+.env.*
+!.env.example
+http-client.private.env.json
+.DS_Store
+frontend/node_modules/
+frontend/dist/
+__pycache__/
+*.py[cod]
+/docs/

@@ -1,0 +1,60 @@
+### 1. Rinat: получить токен
+POST http://localhost:8080/realms/logistics/protocol/openid-connect/token
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=password&client_id=logistics-cli&username=rinat&password={{demoPassword}}
+
+> {% client.global.set("rinat_token", response.body.access_token); %}
+
+### 2. Sofia: получить токен
+POST http://localhost:8080/realms/logistics/protocol/openid-connect/token
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=password&client_id=logistics-cli&username=sofia&password={{demoPassword}}
+
+> {% client.global.set("sofia_token", response.body.access_token); %}
+
+### 3. Admin: получить токен
+POST http://localhost:8080/realms/logistics/protocol/openid-connect/token
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=password&client_id=logistics-cli&username=admin&password={{demoPassword}}
+
+> {% client.global.set("admin_token", response.body.access_token); %}
+
+### 4. Rinat создаёт заявку — ожидаем 202
+POST http://localhost:8081/api/v1/shipments
+Authorization: Bearer {{rinat_token}}
+Content-Type: application/json
+
+< create-shipment.json
+
+> {% client.global.set("shipment_id", response.body.id); %}
+
+### 5. Rinat читает свою заявку — 200
+GET http://localhost:8081/api/v1/shipments/{{shipment_id}}
+Authorization: Bearer {{rinat_token}}
+
+### 6. Sofia читает чужую заявку — 404
+GET http://localhost:8081/api/v1/shipments/{{shipment_id}}
+Authorization: Bearer {{sofia_token}}
+
+### 7. Admin читает заявку Rinat — 200
+GET http://localhost:8081/api/v1/shipments/{{shipment_id}}
+Authorization: Bearer {{admin_token}}
+
+### 8. История создания
+GET http://localhost:8081/api/v1/shipments/{{shipment_id}}/events
+Authorization: Bearer {{rinat_token}}
+
+### 9. Фильтры, сортировка и пагинация
+GET http://localhost:8081/api/v1/shipments?status=CREATED&deliveryType=EXPRESS&page=0&size=10&sort=createdAt,desc
+Authorization: Bearer {{rinat_token}}
+
+### 10. Каркас Service B
+GET http://localhost:8082/api/v1/status
+Authorization: Bearer {{rinat_token}}
+
+### 11. Каркас Service C
+GET http://localhost:8083/api/v1/status
+Authorization: Bearer {{rinat_token}}

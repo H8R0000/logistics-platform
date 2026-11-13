@@ -1,0 +1,9 @@
+.git
+.idea
+*.iml
+**/target
+**/node_modules
+.env
+.env.*
+**/http-client.private.env.json
+docs

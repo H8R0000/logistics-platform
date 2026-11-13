@@ -1,0 +1,180 @@
+name: logistics-platform
+
+x-jwt-environment: &jwt-environment
+  JWT_ISSUER_URI: http://localhost:8080/realms/logistics
+  JWT_JWK_SET_URI: http://keycloak:8080/realms/logistics/protocol/openid-connect/certs
+
+x-app-defaults: &app-defaults
+  init: true
+  stop_grace_period: 25s
+  healthcheck:
+    test:
+      - CMD
+      - bash
+      - -ec
+      - >-
+        exec 3<>/dev/tcp/127.0.0.1/$$SERVER_PORT;
+        printf 'GET /actuator/health HTTP/1.0\r\n\r\n' >&3;
+        read -r response <&3;
+        [[ "$$response" == *"200"* ]]
+    interval: 10s
+    timeout: 5s
+    start_period: 45s
+    retries: 12
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:?Set POSTGRES_ADMIN_PASSWORD in .env}
+      POSTGRES_DB: postgres
+      MANAGEMENT_DB_PASSWORD: ${MANAGEMENT_DB_PASSWORD:?Set MANAGEMENT_DB_PASSWORD in .env}
+      PROCESSING_DB_PASSWORD: ${PROCESSING_DB_PASSWORD:?Set PROCESSING_DB_PASSWORD in .env}
+      COURIER_DB_PASSWORD: ${COURIER_DB_PASSWORD:?Set COURIER_DB_PASSWORD in .env}
+      KEYCLOAK_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD:?Set KEYCLOAK_DB_PASSWORD in .env}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./infra/postgres/init.sh:/docker-entrypoint-initdb.d/01-databases.sh:ro
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -h 127.0.0.1 -U postgres -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  kafka:
+    image: apache/kafka:4.1.2
+    environment:
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: INTERNAL://:29092,EXTERNAL://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:29092,EXTERNAL://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+    ports:
+      - "127.0.0.1:9092:9092"
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: [CMD, /opt/kafka/bin/kafka-topics.sh, --bootstrap-server, localhost:29092, --list]
+      interval: 10s
+      timeout: 10s
+      start_period: 30s
+      retries: 15
+
+  kafka-init:
+    image: apache/kafka:4.1.2
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: [/bin/bash, -ec]
+    command:
+      - |
+        for topic in shipment-requests shipment-processing shipment-events shipment-errors shipment-dlq; do
+          /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092 \
+            --create --if-not-exists --topic "$$topic" --partitions 3 --replication-factor 1
+        done
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.8.2
+    command: [start-dev, --import-realm]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?Set KEYCLOAK_ADMIN_PASSWORD in .env}
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD:?Set KEYCLOAK_DB_PASSWORD in .env}
+      KC_HOSTNAME: http://localhost:8080
+      KC_HEALTH_ENABLED: "true"
+      DEMO_USER_PASSWORD: ${DEMO_USER_PASSWORD:?Set DEMO_USER_PASSWORD in .env}
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./infra/keycloak/logistics-realm.json:/opt/keycloak/data/import/logistics-realm.json:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - bash
+        - -ec
+        - >-
+          exec 3<>/dev/tcp/127.0.0.1/9000;
+          printf 'GET /health/ready HTTP/1.0\r\n\r\n' >&3;
+          read -r response <&3;
+          [[ "$$response" == *"200"* ]]
+      interval: 10s
+      timeout: 5s
+      start_period: 60s
+      retries: 30
+
+  shipment-management:
+    <<: *app-defaults
+    build:
+      context: .
+      args:
+        MODULE: shipment-management
+    environment:
+      <<: *jwt-environment
+      SERVER_PORT: 8081
+      DB_URL: jdbc:postgresql://postgres:5432/shipment_management
+      DB_USERNAME: shipment_management
+      MANAGEMENT_DB_PASSWORD: ${MANAGEMENT_DB_PASSWORD:?Set MANAGEMENT_DB_PASSWORD in .env}
+    ports:
+      - "127.0.0.1:8081:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+
+  shipment-processing:
+    <<: *app-defaults
+    build:
+      context: .
+      args:
+        MODULE: shipment-processing
+    environment:
+      <<: *jwt-environment
+      SERVER_PORT: 8082
+    ports:
+      - "127.0.0.1:8082:8082"
+    depends_on:
+      keycloak:
+        condition: service_healthy
+
+  courier-provider:
+    <<: *app-defaults
+    build:
+      context: .
+      args:
+        MODULE: courier-provider
+    environment:
+      <<: *jwt-environment
+      SERVER_PORT: 8083
+      DB_URL: jdbc:postgresql://postgres:5432/courier_provider
+      DB_USERNAME: courier_provider
+      COURIER_DB_PASSWORD: ${COURIER_DB_PASSWORD:?Set COURIER_DB_PASSWORD in .env}
+    ports:
+      - "127.0.0.1:8083:8083"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+
+volumes:
+  postgres-data:
+  kafka-data:

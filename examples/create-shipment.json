@@ -1,0 +1,19 @@
+{
+  "origin": {
+    "city": "Vilnius",
+    "country": "Lithuania",
+    "address": "Gedimino pr. 1"
+  },
+  "destination": {
+    "city": "Berlin",
+    "country": "Germany",
+    "address": "Unter den Linden 1"
+  },
+  "weight": 12.5,
+  "dimensions": {
+    "length": 40,
+    "width": 30,
+    "height": 20
+  },
+  "deliveryType": "EXPRESS"
+}
