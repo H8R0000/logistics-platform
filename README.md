@@ -60,16 +60,7 @@ docker compose up -d --build
 заявку с курьером; маршрут хранит адреса и расчётное время доставки. История сохраняет переходы,
 outbox — сообщения для публикации. Между БД нет внешних ключей: используются UUID.
 
-```mermaid
-flowchart LR
-    UI[Frontend] --> A[Management]
-    UI --> B[Processing]
-    External[Внешний источник] -->|shipment-requests| A
-    A -->|shipment-processing| B
-    B -->|HTTP: доступные курьеры| C[Courier Provider]
-    B -->|shipment-events| A
-    B -->|shipment-errors| Errors[Ошибки обработки]
-```
+![Архитектура Logistics Platform](assets/architecture.png)
 
 Процесс: регистрация `CREATED` → обработка и поиск курьера → `IN_TRANSIT` → `DELIVERED`.
 Если курьера нет, задача ждёт в `WAITING_FOR_COURIER`; после 5 минут поиска — `COURIER_NOT_FOUND`.
