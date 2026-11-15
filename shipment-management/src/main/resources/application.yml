@@ -22,6 +22,33 @@ spring:
   jackson:
     deserialization:
       fail-on-unknown-properties: true
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    security:
+      protocol: SASL_PLAINTEXT
+    properties:
+      "[sasl.mechanism]": PLAIN
+      "[sasl.jaas.config]": >-
+        org.apache.kafka.common.security.plain.PlainLoginModule required
+        username="shipment-management" password="${KAFKA_MANAGEMENT_PASSWORD}";
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      acks: all
+      properties:
+        "[enable.idempotence]": true
+        "[max.block.ms]": 5000
+        "[delivery.timeout.ms]": 10000
+        "[request.timeout.ms]": 5000
+    consumer:
+      group-id: shipment-management
+      enable-auto-commit: false
+      auto-offset-reset: earliest
+      max-poll-records: 1
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+    listener:
+      ack-mode: record
   security:
     oauth2:
       resourceserver:
@@ -29,6 +56,14 @@ spring:
           issuer-uri: ${JWT_ISSUER_URI:http://localhost:8080/realms/logistics}
           jwk-set-uri: ${JWT_JWK_SET_URI:http://localhost:8080/realms/logistics/protocol/openid-connect/certs}
           audiences: logistics-api
+
+external-shipments:
+  source-id: partner-demo
+  owner-id: external:partner-demo
+
+outbox:
+  publish-interval: ${OUTBOX_PUBLISH_INTERVAL:2s}
+  batch-size: ${OUTBOX_BATCH_SIZE:20}
 
 management:
   endpoints:

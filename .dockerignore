@@ -3,6 +3,7 @@
 *.iml
 **/target
 **/node_modules
+frontend/dist
 .env
 .env.*
 **/http-client.private.env.json

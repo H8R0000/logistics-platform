@@ -27,6 +27,13 @@ spring:
           jwk-set-uri: ${JWT_JWK_SET_URI:http://localhost:8080/realms/logistics/protocol/openid-connect/certs}
           audiences: logistics-api
 
+courier:
+  simulation:
+    update-interval: 15s
+    availability-probability: 0.6
+    error-probability: 0
+    response-delay: 0s
+
 management:
   endpoints:
     web:

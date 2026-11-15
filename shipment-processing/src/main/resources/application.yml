@@ -7,6 +7,49 @@ spring:
     name: shipment-processing
   lifecycle:
     timeout-per-shutdown-phase: 20s
+  task:
+    scheduling:
+      pool:
+        size: 2
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/shipment_processing}
+    username: ${DB_USERNAME:shipment_processing}
+    password: ${PROCESSING_DB_PASSWORD}
+  liquibase:
+    change-log: classpath:db/changelog/db.changelog-master.sql
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate.jdbc.time_zone: UTC
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    security:
+      protocol: SASL_PLAINTEXT
+    properties:
+      "[sasl.mechanism]": PLAIN
+      "[sasl.jaas.config]": >-
+        org.apache.kafka.common.security.plain.PlainLoginModule required
+        username="shipment-processing" password="${KAFKA_PROCESSING_PASSWORD}";
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      acks: all
+      properties:
+        "[enable.idempotence]": true
+        "[max.block.ms]": 5000
+        "[delivery.timeout.ms]": 10000
+        "[request.timeout.ms]": 5000
+    consumer:
+      group-id: shipment-processing
+      enable-auto-commit: false
+      auto-offset-reset: earliest
+      max-poll-records: 1
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+    listener:
+      ack-mode: record
   security:
     oauth2:
       resourceserver:
@@ -14,6 +57,39 @@ spring:
           issuer-uri: ${JWT_ISSUER_URI:http://localhost:8080/realms/logistics}
           jwk-set-uri: ${JWT_JWK_SET_URI:http://localhost:8080/realms/logistics/protocol/openid-connect/certs}
           audiences: logistics-api
+
+processing:
+  executor:
+    core-pool-size: 2
+    max-pool-size: 4
+    queue-capacity: 20
+    rejection-policy: ABORT
+  dispatch-interval: 1s
+  dispatch-batch-size: 20
+  execution-timeout: 60s
+  courier-search-interval: 15s
+  max-courier-wait: 5m
+  max-attempts: 3
+  retry-initial-delay: 1s
+  retry-max-delay: 30s
+
+outbox:
+  publish-interval: 2s
+  batch-size: 20
+
+delivery-simulation:
+  standard-min-duration: 2m
+  standard-max-duration: 5m
+  express-min-duration: 30s
+  express-max-duration: 90s
+
+courier-client:
+  base-url: ${COURIER_PROVIDER_URL:http://localhost:8083}
+  token-uri: ${SERVICE_TOKEN_URI:http://localhost:8080/realms/logistics/protocol/openid-connect/token}
+  client-id: shipment-processing-service
+  client-secret: ${PROCESSING_CLIENT_SECRET}
+  connect-timeout: 2s
+  read-timeout: 5s
 
 management:
   endpoints:

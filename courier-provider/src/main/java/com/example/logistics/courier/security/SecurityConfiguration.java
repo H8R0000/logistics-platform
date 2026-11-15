@@ -30,6 +30,7 @@ public class SecurityConfiguration {
                 .authorizeHttpRequests(requests -> requests
                         .dispatcherTypeMatchers(DispatcherType.ERROR).permitAll()
                         .requestMatchers("/actuator/health").permitAll()
+                        .requestMatchers("/api/v1/couriers/available").hasAnyRole("USER", "ADMIN", "COURIER_READER")
                         .requestMatchers("/api/v1/**").hasAnyRole("USER", "ADMIN")
                         .anyRequest().denyAll())
                 .oauth2ResourceServer(resourceServer -> resourceServer.jwt(Customizer.withDefaults()))

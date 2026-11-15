@@ -12,6 +12,7 @@ import java.time.Instant;
 import java.util.UUID;
 import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
+import org.jspecify.annotations.Nullable;
 
 @Entity
 @Table(name = "shipments")
@@ -22,6 +23,12 @@ public class ShipmentEntity {
 
     @Column(name = "owner_id", nullable = false)
     private String ownerId;
+
+    @Column(name = "source_id", length = 64)
+    private @Nullable String sourceId;
+
+    @Column(name = "source_message_id")
+    private @Nullable UUID sourceMessageId;
 
     @JdbcTypeCode(SqlTypes.JSON)
     @Column(nullable = false, columnDefinition = "jsonb")
@@ -54,6 +61,10 @@ public class ShipmentEntity {
 
     @Column(name = "delivered_at")
     private Instant deliveredAt;
+
+    /** Номер последнего применённого события B; защищает от дублей и запоздалых событий. */
+    @Column(name = "last_processing_sequence", nullable = false)
+    private long lastProcessingSequence;
 
     @Version
     @Column(nullable = false)
@@ -119,5 +130,18 @@ public class ShipmentEntity {
 
     public Instant getDeliveredAt() {
         return deliveredAt;
+    }
+
+    public long getLastProcessingSequence() {
+        return lastProcessingSequence;
+    }
+
+    /** Вызывается после проверки контракта и порядка событий под блокировкой строки заявки. */
+    public void applyProcessingResult(ShipmentStatus status, long sequenceNumber,
+            @Nullable Instant deliveredAt, Instant now) {
+        this.status = status;
+        this.lastProcessingSequence = sequenceNumber;
+        this.deliveredAt = deliveredAt;
+        this.updatedAt = now;
     }
 }

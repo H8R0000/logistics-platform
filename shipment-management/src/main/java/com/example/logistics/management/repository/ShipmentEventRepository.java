@@ -7,5 +7,5 @@ import org.springframework.data.jpa.repository.JpaRepository;
 
 public interface ShipmentEventRepository extends JpaRepository<ShipmentEventEntity, UUID> {
 
-    List<ShipmentEventEntity> findByShipmentIdOrderByCreatedAtAscIdAsc(UUID shipmentId);
+    List<ShipmentEventEntity> findByShipmentIdOrderByProcessingSequenceAscCreatedAtAscIdAsc(UUID shipmentId);
 }

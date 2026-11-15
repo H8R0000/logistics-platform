@@ -1,118 +1,213 @@
 <script setup>
-import { computed, reactive, ref } from 'vue'
-import { demoShipments, deliveryTypes, shipmentStatuses } from './mockData.js'
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { auth, initializeAuth, login, logout } from './auth.js'
+import { api } from './api.js'
+import { deliveryTypes, eventTitles, shipmentStatuses, stages, taskStatuses } from './labels.js'
 
-const shipments = ref(structuredClone(demoShipments))
-const selectedId = ref(shipments.value[0].id)
+const shipments = ref([])
+const selectedId = ref(null)
 const search = ref('')
-const statusFilter = ref('')
+const page = ref(0)
+const totalElements = ref(0)
+const totalPages = ref(0)
+const statistics = ref(null)
 const notice = ref('')
+const error = ref('')
+const detailError = ref('')
+const taskError = ref('')
+const loading = ref(false)
+const refreshing = ref(false)
+const detailLoading = ref(false)
+const detailsLoaded = ref(false)
+const submitting = ref(false)
+const retrying = ref(false)
+const shipmentEvents = ref([])
+const selectedTask = ref(null)
+const taskEvents = ref([])
 const createDialog = ref(null)
 const formError = ref('')
-const nextNumber = ref(1043)
+const defaults = () => ({ status: '', deliveryType: '', createdFrom: '', createdTo: '', sort: 'createdAt,desc' })
+const filters = reactive(defaults())
+const appliedFilters = ref(defaults())
+let listRequest = 0
+let detailRequest = 0
+let timer
 
 function emptyForm() {
     return {
         origin: { city: '', country: '', address: '' },
         destination: { city: '', country: '', address: '' },
-        weight: 1,
-        dimensions: { length: 10, width: 10, height: 10 },
-        deliveryType: 'STANDARD',
+        weight: 1, dimensions: { length: 10, width: 10, height: 10 }, deliveryType: 'EXPRESS',
     }
 }
-
 const form = reactive(emptyForm())
-
-// computed пересчитывает список, когда меняются данные, поиск или фильтр.
 const filteredShipments = computed(() => {
     const query = search.value.trim().toLocaleLowerCase('ru')
-    return shipments.value.filter((shipment) => {
-        const text = `${shipment.number} ${shipment.origin.city} ${shipment.destination.city}`
-        return (!statusFilter.value || shipment.status === statusFilter.value)
-            && text.toLocaleLowerCase('ru').includes(query)
-    })
+    return shipments.value.filter((s) => `${s.id} ${s.origin.city} ${s.destination.city}`.toLocaleLowerCase('ru').includes(query))
 })
+const selectedShipment = computed(() => shipments.value.find((s) => s.id === selectedId.value) || null)
+const activeCount = computed(() => ['QUEUED', 'PROCESSING', 'WAITING_FOR_COURIER', 'IN_TRANSIT']
+    .reduce((sum, status) => sum + (statistics.value?.byStatus[status] || 0), 0))
+const deliveredCount = computed(() => statistics.value?.byStatus.COMPLETED || 0)
+const failedCount = computed(() => (statistics.value?.byStatus.FAILED || 0) + (statistics.value?.byStatus.COURIER_NOT_FOUND || 0))
+const extraFilterCount = computed(() => [appliedFilters.value.createdFrom, appliedFilters.value.createdTo,
+    appliedFilters.value.sort !== 'createdAt,desc', search.value.trim()].filter(Boolean).length)
+const canRetry = computed(() => auth.admin && ['FAILED', 'COURIER_NOT_FOUND'].includes(selectedTask.value?.status))
+const taskIsActive = computed(() => selectedTask.value && !['FAILED', 'COURIER_NOT_FOUND', 'COMPLETED'].includes(selectedTask.value.status))
 
-const selectedShipment = computed(() =>
-    filteredShipments.value.find((shipment) => shipment.id === selectedId.value)
-        ?? filteredShipments.value[0]
-        ?? null,
-)
-
-const activeCount = computed(() => shipments.value.filter((shipment) =>
-    ['CREATED', 'PROCESSING', 'WAITING_FOR_COURIER', 'IN_TRANSIT'].includes(shipment.status),
-).length)
-
-const deliveredCount = computed(() =>
-    shipments.value.filter((shipment) => shipment.status === 'DELIVERED').length,
-)
-
+function statusMeta(status, task = false) {
+    return (task ? taskStatuses : shipmentStatuses)[status] || { label: status, tone: 'neutral' }
+}
+function shortId(id) { return id.slice(0, 8) }
 function formatDate(value) {
-    return new Intl.DateTimeFormat('ru-RU', {
-        day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit',
-    }).format(new Date(value))
+    if (!value) return '—'
+    return new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(new Date(value))
+}
+function formatNumber(value) { return new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 3 }).format(value) }
+
+async function loadDetails() {
+    const id = selectedId.value
+    const request = ++detailRequest
+    if (!id || !auth.authenticated) return
+    // При фоновом обновлении сохраняем содержимое и не показываем загрузку заново.
+    detailLoading.value = !detailsLoaded.value
+    const current = () => request === detailRequest && id === selectedId.value && auth.authenticated
+    try {
+        const [shipment, history, tasks] = await Promise.allSettled([
+            api('management', `/shipments/${id}`), api('management', `/shipments/${id}/events`),
+            api('processing', `/tasks?shipmentId=${id}&size=1`),
+        ])
+        if (!current()) return
+        let nextDetailError = ''
+        let nextTaskError = ''
+        if (shipment.status === 'fulfilled') {
+            const index = shipments.value.findIndex((s) => s.id === id)
+            if (index >= 0) shipments.value[index] = shipment.value
+        } else { nextDetailError = shipment.reason.message }
+        if (history.status === 'fulfilled') shipmentEvents.value = history.value
+        else nextDetailError = history.reason.message
+        if (tasks.status === 'fulfilled') {
+            selectedTask.value = tasks.value.content[0] || null
+            if (selectedTask.value) {
+                try {
+                    const events = await api('processing', `/tasks/${selectedTask.value.id}/events`)
+                    if (current()) taskEvents.value = events
+                } catch (e) { nextTaskError = e.message }
+            } else taskEvents.value = []
+        } else { nextTaskError = tasks.reason.message }
+        if (current()) {
+            detailError.value = nextDetailError
+            taskError.value = nextTaskError
+            detailsLoaded.value = true
+        }
+    } finally { if (current()) detailLoading.value = false }
 }
 
-function formatNumber(value) {
-    return new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 3 }).format(value)
+async function refresh({ preferredId = null, force = false, background = false } = {}) {
+    if (!auth.authenticated || (refreshing.value && !force)) return
+    const request = ++listRequest
+    refreshing.value = true
+    loading.value = !background
+    try {
+        const params = new URLSearchParams({ page: page.value, size: 10, sort: appliedFilters.value.sort })
+        for (const field of ['status', 'deliveryType', 'createdFrom', 'createdTo']) {
+            const value = appliedFilters.value[field]
+            if (value) params.set(field, field.startsWith('created') ? new Date(value).toISOString() : value)
+        }
+        const result = await api('management', `/shipments?${params}`)
+        if (request !== listRequest || !auth.authenticated) return
+        // Последняя страница могла исчезнуть из-за изменения статуса заявки.
+        if (page.value > 0 && page.value >= Math.max(1, result.totalPages)) {
+            page.value = Math.max(0, result.totalPages - 1)
+            return await refresh({ preferredId, force: true, background })
+        }
+        const previousId = selectedId.value
+        shipments.value = result.content
+        totalElements.value = result.totalElements
+        totalPages.value = result.totalPages
+        if (preferredId && result.content.some((s) => s.id === preferredId)) selectedId.value = preferredId
+        else if (!result.content.some((s) => s.id === selectedId.value)) selectedId.value = result.content[0]?.id || null
+        if (selectedId.value && selectedId.value === previousId) await loadDetails()
+        if (request !== listRequest || !auth.authenticated) return
+        let refreshError = ''
+        if (auth.admin) {
+            try {
+                const result = await api('processing', '/tasks/statistics')
+                if (request === listRequest && auth.authenticated) statistics.value = result
+            } catch (e) { refreshError = e.message }
+        }
+        if (request === listRequest && auth.authenticated) error.value = refreshError
+    } catch (e) { if (request === listRequest) error.value = e.message }
+    finally { if (request === listRequest) { loading.value = false; refreshing.value = false } }
 }
 
-function clearFilters() {
-    search.value = ''
-    statusFilter.value = ''
-}
+function applyFilters() { appliedFilters.value = { ...filters }; page.value = 0; refresh({ force: true }) }
+function clearFilters() { Object.assign(filters, defaults()); search.value = ''; applyFilters() }
+function changePage(offset) { page.value += offset; refresh({ force: true }) }
 
-function resetDemo() {
-    shipments.value = structuredClone(demoShipments)
-    selectedId.value = shipments.value[0].id
-    nextNumber.value = 1043
-    clearFilters()
-    notice.value = 'Исходные демонстрационные заявки восстановлены.'
-}
-
-function openCreateForm() {
-    Object.assign(form, emptyForm())
-    formError.value = ''
-    createDialog.value.showModal()
-}
-
-function createShipment() {
-    const origin = {
-        city: form.origin.city.trim(),
-        country: form.origin.country.trim(),
-        address: form.origin.address.trim(),
+watch(filteredShipments, (rows) => {
+    if (!rows.some((s) => s.id === selectedId.value)) selectedId.value = rows[0]?.id || null
+})
+watch(selectedId, () => {
+    selectedTask.value = null; shipmentEvents.value = []; taskEvents.value = []
+    detailsLoaded.value = false
+    detailError.value = ''; taskError.value = ''
+    if (selectedId.value) loadDetails()
+    else { detailRequest++; detailLoading.value = false }
+})
+watch(() => auth.authenticated, (authenticated) => {
+    if (authenticated) { page.value = 0; refresh() }
+    else {
+        listRequest++; detailRequest++; loading.value = false; refreshing.value = false; detailLoading.value = false
+        shipments.value = []; selectedId.value = null; statistics.value = null
+        createDialog.value?.close()
     }
-    const destination = {
-        city: form.destination.city.trim(),
-        country: form.destination.country.trim(),
-        address: form.destination.address.trim(),
-    }
-    if ([...Object.values(origin), ...Object.values(destination)].some((value) => !value)) {
-        formError.value = 'Заполните город, страну и адрес для обеих точек маршрута.'
-        return
-    }
+}, { immediate: true })
+onMounted(async () => {
+    if (!auth.ready) await initializeAuth()
+    timer = window.setInterval(() => {
+        if (!document.hidden && !submitting.value && !retrying.value && !detailLoading.value && !createDialog.value?.open) refresh({ background: true })
+    }, 5000)
+})
+onUnmounted(() => { clearInterval(timer); listRequest++; detailRequest++ })
 
-    const now = new Date().toISOString()
-    const shipment = {
-        id: crypto.randomUUID(),
-        number: `LG-${nextNumber.value++}`,
-        origin,
-        destination,
-        weight: form.weight,
-        dimensions: { ...form.dimensions },
-        deliveryType: form.deliveryType,
-        status: 'CREATED',
-        createdAt: now,
-        estimatedDeliveryAt: null,
-        courier: null,
-        events: [{ title: 'Заявка создана', at: now }],
+function openCreateForm() { Object.assign(form, emptyForm()); formError.value = ''; createDialog.value.showModal() }
+function fillExample() {
+    Object.assign(form, emptyForm(), {
+        origin: { city: 'Vilnius', country: 'Lithuania', address: 'Gedimino pr. 1' },
+        destination: { city: 'Berlin', country: 'Germany', address: 'Unter den Linden 1' },
+    })
+}
+function cancelCreate(event) { if (submitting.value) event.preventDefault() }
+async function createShipment() {
+    if (submitting.value) return
+    const address = (value) => Object.fromEntries(Object.entries(value).map(([k, v]) => [k, v.trim()]))
+    const origin = address(form.origin), destination = address(form.destination)
+    if ([...Object.values(origin), ...Object.values(destination)].some((v) => !v)) {
+        formError.value = 'Заполните город, страну и адрес для обеих точек.'; return
     }
-
-    shipments.value.unshift(shipment)
-    selectedId.value = shipment.id
-    clearFilters()
-    createDialog.value.close()
-    notice.value = `Заявка ${shipment.number} добавлена в демо-список.`
+    submitting.value = true; formError.value = ''
+    try {
+        const result = await api('management', '/shipments', { method: 'POST', body: {
+            origin, destination, weight: form.weight, dimensions: { ...form.dimensions }, deliveryType: form.deliveryType,
+        } })
+        createDialog.value?.close()
+        notice.value = `Заявка ${shortId(result.id)} создана. Обработка начнётся автоматически.`
+        Object.assign(filters, defaults()); appliedFilters.value = defaults(); page.value = 0; search.value = ''
+        await refresh({ preferredId: result.id, force: true })
+    } catch (e) { formError.value = e.message }
+    finally { submitting.value = false }
+}
+async function retryTask() {
+    if (!canRetry.value || retrying.value) return
+    const id = selectedTask.value.id
+    retrying.value = true; taskError.value = ''
+    try {
+        selectedTask.value = await api('processing', `/tasks/${id}/retry`, { method: 'POST' })
+        notice.value = 'Повтор обработки принят.'
+        await loadDetails()
+    } catch (e) { taskError.value = e.message }
+    finally { retrying.value = false }
 }
 </script>
 
@@ -123,18 +218,28 @@ function createShipment() {
                 <img src="/favicon.svg" alt="" width="40" height="40" />
                 <span>Logistics<small>Платформа доставки</small></span>
             </a>
-            <div class="demo-label"><span class="status-dot"></span>Демонстрационный режим</div>
+            <div v-if="auth.authenticated" class="account-controls">
+                <span class="account-label">{{ auth.username }} · {{ auth.admin ? 'ADMIN' : 'USER' }}</span>
+                <button class="button button-secondary" @click="logout">Выйти</button>
+            </div>
         </div>
     </header>
 
-    <main id="main" class="page">
+    <main v-if="!auth.authenticated" class="page">
+        <section class="panel login-panel">
+            <h1>Logistics Platform</h1>
+            <p class="subtitle">Войдите, чтобы создавать заявки и следить за доставками.</p>
+            <p v-if="auth.error" class="form-error" role="alert">{{ auth.error }}</p>
+            <p v-if="!auth.ready" class="subtitle" role="status">Подключение…</p>
+            <button v-else class="button button-primary" @click="login">Войти</button>
+        </section>
+    </main>
+    <main v-else id="main" class="page">
         <section class="page-heading" aria-labelledby="page-title">
             <div>
-                <p class="eyebrow">ОБЗОР ОТПРАВЛЕНИЙ</p>
-                <h1 id="page-title">Заявки на доставку</h1>
-                <p class="subtitle">Каждая посылка, её маршрут и история — в одном месте.</p>
+                <h1 id="page-title">{{ auth.admin ? 'Все заявки' : 'Мои заявки' }}</h1>
             </div>
-            <button class="button button-primary" @click="openCreateForm">
+            <button class="button button-primary" :disabled="submitting" @click="openCreateForm">
                 <span class="plus" aria-hidden="true">+</span> Новая заявка
             </button>
         </section>
@@ -144,49 +249,44 @@ function createShipment() {
             <button class="icon-button" aria-label="Закрыть уведомление" @click="notice = ''">×</button>
         </div>
 
-        <section class="metrics" aria-label="Сводка по заявкам">
-            <article class="metric-card">
-                <div><p class="metric-label">Всего заявок</p><p class="metric-value">{{ shipments.length }}</p></div>
-                <div class="metric-symbol symbol-purple" aria-hidden="true">
-                    <svg viewBox="0 0 24 24"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9Zm0 9 8-4.5M12 12 4 7.5m8 4.5v9M8 5.2l8 4.5" /></svg>
-                </div>
-                <p class="metric-caption">Все демонстрационные отправления</p>
-            </article>
-            <article class="metric-card">
-                <div><p class="metric-label">Активные</p><p class="metric-value">{{ activeCount }}</p></div>
-                <div class="metric-symbol symbol-blue" aria-hidden="true">
-                    <svg viewBox="0 0 24 24"><path d="M3 7h11v10H3Zm11 4h4l3 4v2h-7M6 7V4h5M6 20a2 2 0 1 0 0-4 2 2 0 0 0 0 4Zm12 0a2 2 0 1 0 0-4 2 2 0 0 0 0 4Z" /></svg>
-                </div>
-                <p class="metric-caption">Созданы, обрабатываются или в пути</p>
-            </article>
-            <article class="metric-card">
-                <div><p class="metric-label">Доставлены</p><p class="metric-value">{{ deliveredCount }}</p></div>
-                <div class="metric-symbol symbol-green" aria-hidden="true">
-                    <svg viewBox="0 0 24 24"><path d="M20 11.3V12a8 8 0 1 1-4.7-7.3M8 11l4 4 9-10" /></svg>
-                </div>
-                <p class="metric-caption">Доставка успешно подтверждена</p>
-            </article>
+        <div v-if="error" class="notice error-notice" role="alert">{{ error }}</div>
+        <section v-if="auth.admin" class="statistics" aria-label="Статистика обработки">
+            <span>Задачи обработки</span>
+            <span>Всего <strong>{{ statistics?.total ?? '—' }}</strong></span>
+            <span>Активные <strong>{{ statistics ? activeCount : '—' }}</strong></span>
+            <span>Завершены <strong>{{ statistics ? deliveredCount : '—' }}</strong></span>
+            <span>Неудачные <strong>{{ statistics ? failedCount : '—' }}</strong></span>
         </section>
 
         <div class="workspace">
             <section class="panel shipments-panel" aria-labelledby="shipments-title">
                 <div class="panel-heading">
                     <div class="heading-with-count">
-                        <h2 id="shipments-title">Все заявки</h2><span class="count-badge">{{ shipments.length }}</span>
+                        <h2 id="shipments-title">Заявки</h2><span class="count-badge">{{ totalElements }}</span>
                     </div>
-                    <span class="quiet-label">Выберите заявку для просмотра</span>
+                    <button class="button button-secondary refresh-button" :disabled="loading || submitting" @click="refresh({ force: true })">{{ loading ? 'Обновление…' : 'Обновить' }}</button>
                 </div>
 
-                <div class="filters">
-                    <label class="search-field">
-                        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" /><path d="m16 16 5 5" /></svg>
-                        <input v-model="search" type="search" placeholder="Номер заявки или город" aria-label="Поиск заявок" />
-                    </label>
-                    <select v-model="statusFilter" aria-label="Фильтр по статусу">
-                        <option value="">Все статусы</option>
-                        <option v-for="(status, value) in shipmentStatuses" :key="value" :value="value">{{ status.label }}</option>
-                    </select>
-                </div>
+                <form class="filters" @submit.prevent="applyFilters">
+                    <div class="filter-row">
+                        <select v-model="filters.status" aria-label="Фильтр по статусу">
+                            <option value="">Все статусы</option>
+                            <option v-for="(status, value) in shipmentStatuses" :key="value" :value="value">{{ status.label }}</option>
+                        </select>
+                        <select v-model="filters.deliveryType" aria-label="Тип доставки"><option value="">Любая доставка</option><option v-for="(label, value) in deliveryTypes" :key="value" :value="value">{{ label }}</option></select>
+                        <button class="button button-secondary" type="submit" :disabled="loading || submitting">Применить</button>
+                        <button class="text-button" type="button" :disabled="loading || submitting" @click="clearFilters">Сбросить</button>
+                    </div>
+                    <details class="extra-filters">
+                        <summary>Ещё фильтры<span v-if="extraFilterCount"> · {{ extraFilterCount }}</span></summary>
+                        <div class="extra-filter-fields">
+                            <label class="field-wide">Поиск на текущей странице<input v-model="search" type="search" placeholder="ID или город" aria-label="Поиск на текущей странице" /></label>
+                            <label>Создана с<input v-model="filters.createdFrom" type="datetime-local" /></label>
+                            <label>Создана по<input v-model="filters.createdTo" type="datetime-local" /></label>
+                            <label class="field-wide">Сортировка<select v-model="filters.sort" aria-label="Сортировка"><option value="createdAt,desc">Сначала новые</option><option value="createdAt,asc">Сначала старые</option><option value="weight,asc">По весу ↑</option><option value="weight,desc">По весу ↓</option></select></label>
+                        </div>
+                    </details>
+                </form>
 
                 <div v-if="filteredShipments.length" class="table-scroll">
                     <table>
@@ -197,7 +297,7 @@ function createShipment() {
                                 @click="selectedId = shipment.id">
                                 <td>
                                     <button class="shipment-link" :aria-pressed="selectedShipment?.id === shipment.id"
-                                        @click.stop="selectedId = shipment.id">{{ shipment.number }}</button>
+                                        @click.stop="selectedId = shipment.id">{{ shortId(shipment.id) }}</button>
                                     <span class="cell-caption">{{ formatDate(shipment.createdAt) }}</span>
                                 </td>
                                 <td>
@@ -205,7 +305,7 @@ function createShipment() {
                                     <span class="destination-city">{{ shipment.destination.city }}</span>
                                     <span class="cell-caption">{{ deliveryTypes[shipment.deliveryType] }}</span>
                                 </td>
-                                <td><span class="status-badge" :class="shipmentStatuses[shipment.status].tone"><span class="status-dot"></span>{{ shipmentStatuses[shipment.status].label }}</span></td>
+                                <td><span class="status-badge" :class="statusMeta(shipment.status).tone"><span class="status-dot"></span>{{ statusMeta(shipment.status).label }}</span></td>
                                 <td class="weight-column weight-value">{{ formatNumber(shipment.weight) }} <span>кг</span></td>
                             </tr>
                         </tbody>
@@ -213,19 +313,22 @@ function createShipment() {
                 </div>
                 <div v-else class="empty-state">
                     <div class="empty-symbol" aria-hidden="true">⌕</div>
-                    <h3>Заявки не найдены</h3>
-                    <p>Попробуйте другой город, номер или статус.</p>
+                    <h3>{{ loading ? 'Загрузка заявок…' : 'Заявки не найдены' }}</h3>
+                    <p>Создайте заявку или измените фильтры.</p>
                     <button class="button button-secondary" @click="clearFilters">Сбросить фильтры</button>
                 </div>
 
-                <div class="list-footer"><span>Показано {{ filteredShipments.length }} из {{ shipments.length }}</span><span class="demo-data-note"><span class="status-dot"></span>Тестовые данные</span></div>
+                <div class="list-footer">
+                    <span>На странице {{ filteredShipments.length }} · всего {{ totalElements }}</span>
+                    <div class="pagination"><button class="button button-secondary" :disabled="page === 0 || loading || submitting" @click="changePage(-1)">←</button><span>{{ page + 1 }} / {{ Math.max(1, totalPages) }}</span><button class="button button-secondary" :disabled="page + 1 >= totalPages || loading || submitting" @click="changePage(1)">→</button></div>
+                </div>
             </section>
 
             <aside class="panel details-panel" aria-labelledby="details-title">
                 <template v-if="selectedShipment">
                     <div class="details-heading">
-                        <div><p class="eyebrow">ПОДРОБНОСТИ ЗАЯВКИ</p><h2 id="details-title">{{ selectedShipment.number }}</h2></div>
-                        <span class="status-badge" :class="shipmentStatuses[selectedShipment.status].tone"><span class="status-dot"></span>{{ shipmentStatuses[selectedShipment.status].label }}</span>
+                        <h2 id="details-title">Заявка {{ shortId(selectedShipment.id) }}</h2>
+                        <span class="status-badge" :class="statusMeta(selectedShipment.status).tone"><span class="status-dot"></span>{{ statusMeta(selectedShipment.status).label }}</span>
                     </div>
 
                     <div class="route-detail">
@@ -243,17 +346,44 @@ function createShipment() {
                         <div><dt>Тип доставки</dt><dd>{{ deliveryTypes[selectedShipment.deliveryType] }}</dd></div>
                         <div><dt>Вес посылки</dt><dd>{{ formatNumber(selectedShipment.weight) }} кг</dd></div>
                         <div class="fact-wide"><dt>Габариты, Д × Ш × В</dt><dd>{{ formatNumber(selectedShipment.dimensions.length) }} × {{ formatNumber(selectedShipment.dimensions.width) }} × {{ formatNumber(selectedShipment.dimensions.height) }} см</dd></div>
-                        <div class="fact-wide"><dt>Курьер</dt><dd :class="{ muted: !selectedShipment.courier }">{{ selectedShipment.courier ?? 'Ещё не назначен' }}</dd></div>
-                        <div v-if="selectedShipment.estimatedDeliveryAt && selectedShipment.status !== 'DELIVERED'" class="fact-wide"><dt>Ожидаемая доставка</dt><dd>{{ formatDate(selectedShipment.estimatedDeliveryAt) }}</dd></div>
+                        <div v-if="selectedShipment.deliveredAt" class="fact-wide"><dt>Доставлена</dt><dd>{{ formatDate(selectedShipment.deliveredAt) }}</dd></div>
                     </dl>
 
+                    <details class="technical-details">
+                        <summary>Данные заявки</summary>
+                        <dl class="task-facts">
+                            <div><dt>ID заявки</dt><dd class="id-text">{{ selectedShipment.id }}</dd></div>
+                            <div v-if="auth.admin"><dt>Владелец</dt><dd class="id-text">{{ selectedShipment.ownerId }}</dd></div>
+                        </dl>
+                    </details>
+
+                    <section class="task-section" aria-label="Обработка заявки">
+                        <p v-if="taskError" class="form-error" role="alert">{{ taskError }}</p>
+                        <details class="task-details">
+                            <summary>Обработка заявки<span v-if="selectedTask" class="task-status">{{ statusMeta(selectedTask.status, true).label }}</span></summary>
+                            <template v-if="selectedTask">
+                                <dl class="task-facts">
+                                    <div><dt>Этап</dt><dd>{{ stages[selectedTask.currentStage] }}</dd></div>
+                                    <div><dt>Неудачных попыток подряд</dt><dd>{{ selectedTask.attempts }}</dd></div>
+                                    <div v-if="taskIsActive"><dt>Следующее выполнение</dt><dd>{{ formatDate(selectedTask.nextExecutionAt) }}</dd></div>
+                                </dl>
+                                <details class="task-history"><summary>История обработки ({{ taskEvents.length }})</summary><ol class="task-event-list"><li v-for="event in taskEvents" :key="event.id"><strong>{{ eventTitles[event.eventType] || event.eventType }}</strong><time>{{ formatDate(event.createdAt) }}</time><p>{{ event.details }}</p></li></ol></details>
+                            </template>
+                            <p v-else-if="!taskError" class="subtitle">{{ detailLoading ? 'Загрузка задачи…' : 'Задача ещё не зарегистрирована.' }}</p>
+                        </details>
+                        <p v-if="selectedTask?.errorMessage" class="form-error">{{ selectedTask.errorMessage }}</p>
+                        <button v-if="canRetry" class="button button-primary retry-button" :disabled="retrying || detailLoading" @click="retryTask">{{ retrying ? 'Отправка…' : 'Повторить обработку' }}</button>
+                    </section>
                     <section class="history-section" aria-labelledby="history-title">
-                        <h3 id="history-title">История доставки <span>{{ selectedShipment.events.length }}</span></h3>
+                        <h3 id="history-title">История доставки <span>{{ shipmentEvents.length }}</span></h3>
+                        <p v-if="detailError" class="form-error" role="alert">{{ detailError }}</p>
+                        <p v-if="!shipmentEvents.length && !detailError" class="subtitle">{{ detailLoading ? 'Загрузка истории…' : 'История пока пуста.' }}</p>
                         <ol class="timeline">
-                            <li v-for="(event, index) in selectedShipment.events" :key="`${selectedShipment.id}-${index}`"
-                                :class="{ latest: index === selectedShipment.events.length - 1, completed: selectedShipment.status === 'DELIVERED' }">
+                            <li v-for="(event, index) in shipmentEvents" :key="event.id"
+                                :class="{ latest: index === shipmentEvents.length - 1, completed: selectedShipment.status === 'DELIVERED' }">
                                 <span class="timeline-marker" aria-hidden="true"></span>
-                                <p>{{ event.title }}</p><time :datetime="event.at">{{ formatDate(event.at) }}</time>
+                                <p>{{ eventTitles[event.eventType] || event.eventType }}</p><time :datetime="event.createdAt">{{ formatDate(event.createdAt) }}</time>
+                                <details v-if="event.details" class="event-description"><summary>Подробности</summary><p class="event-details">{{ event.details }}</p></details>
                             </li>
                         </ol>
                     </section>
@@ -263,18 +393,17 @@ function createShipment() {
         </div>
 
         <footer class="page-footer">
-            <p>Демо-макет. После обновления страницы изменения сбросятся.</p>
-            <button class="text-button" @click="resetDemo">Восстановить демо-данные <span aria-hidden="true">↺</span></button>
+            <p>Статусы обновляются автоматически каждые 5 секунд.</p>
         </footer>
     </main>
 
-    <dialog ref="createDialog" class="create-dialog" aria-labelledby="create-title" @close="formError = ''">
+    <dialog v-if="auth.authenticated" ref="createDialog" class="create-dialog" aria-labelledby="create-title" @cancel="cancelCreate" @close="formError = ''">
         <form @submit.prevent="createShipment">
             <div class="dialog-heading">
-                <div><p class="eyebrow">НОВОЕ ОТПРАВЛЕНИЕ</p><h2 id="create-title">Создать заявку</h2></div>
-                <button type="button" class="icon-button" aria-label="Закрыть форму" @click="createDialog.close()">×</button>
+                <h2 id="create-title">Создать заявку</h2>
+                <button type="button" class="icon-button" aria-label="Закрыть форму" :disabled="submitting" @click="createDialog.close()">×</button>
             </div>
-            <div class="dialog-body">
+            <div class="dialog-body"><button type="button" class="text-button example-button" :disabled="submitting" @click="fillExample">Заполнить пример</button>
                 <div class="address-grid">
                     <fieldset>
                         <legend><span class="section-number">1</span> Откуда забрать</legend>
@@ -314,8 +443,8 @@ function createShipment() {
                 <p v-if="formError" class="form-error" role="alert">{{ formError }}</p>
             </div>
             <div class="dialog-footer">
-                <p>Заявка появится только в этом демо-макете.</p>
-                <div><button type="button" class="button button-secondary" @click="createDialog.close()">Отмена</button><button class="button button-primary" type="submit">Создать заявку <span aria-hidden="true">→</span></button></div>
+                <p>Заявка сохранится на сервере и поступит в обработку.</p>
+                <div><button type="button" class="button button-secondary" :disabled="submitting" @click="createDialog.close()">Отмена</button><button class="button button-primary" type="submit" :disabled="submitting">{{ submitting ? 'Создание…' : 'Создать заявку' }} <span aria-hidden="true">→</span></button></div>
             </div>
         </form>
     </dialog>

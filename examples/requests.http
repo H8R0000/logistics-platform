@@ -27,7 +27,25 @@ POST http://localhost:8081/api/v1/shipments
 Authorization: Bearer {{rinat_token}}
 Content-Type: application/json
 
-< create-shipment.json
+{
+  "origin": {
+    "city": "Vilnius",
+    "country": "Lithuania",
+    "address": "Gedimino pr. 1"
+  },
+  "destination": {
+    "city": "Berlin",
+    "country": "Germany",
+    "address": "Unter den Linden 1"
+  },
+  "weight": 12.5,
+  "dimensions": {
+    "length": 40,
+    "width": 30,
+    "height": 20
+  },
+  "deliveryType": "EXPRESS"
+}
 
 > {% client.global.set("shipment_id", response.body.id); %}
 
@@ -51,10 +69,102 @@ Authorization: Bearer {{rinat_token}}
 GET http://localhost:8081/api/v1/shipments?status=CREATED&deliveryType=EXPRESS&page=0&size=10&sort=createdAt,desc
 Authorization: Bearer {{rinat_token}}
 
-### 10. Каркас Service B
+### 10. Статус Service B
 GET http://localhost:8082/api/v1/status
 Authorization: Bearer {{rinat_token}}
 
-### 11. Каркас Service C
+### 11. Статус Service C
 GET http://localhost:8083/api/v1/status
 Authorization: Bearer {{rinat_token}}
+
+### 12. Список всех курьеров — 200
+GET http://localhost:8083/api/v1/couriers
+Authorization: Bearer {{rinat_token}}
+
+### 13. Курьер по ID — 200
+GET http://localhost:8083/api/v1/couriers/11111111-1111-4111-8111-111111111111
+Authorization: Bearer {{rinat_token}}
+
+### 14. Несуществующий курьер — 404
+GET http://localhost:8083/api/v1/couriers/00000000-0000-0000-0000-000000000000
+Authorization: Bearer {{rinat_token}}
+
+### 15. Доступные курьеры — 200
+GET http://localhost:8083/api/v1/couriers/available
+Authorization: Bearer {{rinat_token}}
+
+### 16. Свои задачи — 200
+GET http://localhost:8082/api/v1/tasks
+Authorization: Bearer {{rinat_token}}
+
+> {% if (response.body.content.length > 0) client.global.set("task_id", response.body.content[0].id); %}
+
+### 17. Все задачи — ADMIN
+GET http://localhost:8082/api/v1/tasks
+Authorization: Bearer {{admin_token}}
+
+### 18. Фильтры, сортировка и пагинация задач
+GET http://localhost:8082/api/v1/tasks?status=QUEUED&currentStage=SEARCH_COURIER&page=0&size=10&sort=createdAt,desc
+Authorization: Bearer {{rinat_token}}
+
+### 19. Задача по ID — после появления задачи в запросе 16
+GET http://localhost:8082/api/v1/tasks/{{task_id}}
+Authorization: Bearer {{rinat_token}}
+
+### 20. История задачи
+GET http://localhost:8082/api/v1/tasks/{{task_id}}/events
+Authorization: Bearer {{rinat_token}}
+
+### 21. Несуществующая задача — 404
+GET http://localhost:8082/api/v1/tasks/00000000-0000-0000-0000-000000000000
+Authorization: Bearer {{rinat_token}}
+
+### 22. Задача созданной заявки — повторить после асинхронной передачи A → Kafka → B
+GET http://localhost:8082/api/v1/tasks?shipmentId={{shipment_id}}
+Authorization: Bearer {{rinat_token}}
+
+> {% if (response.body.content.length > 0) client.global.set("task_id", response.body.content[0].id); %}
+
+### 23. Доставки в пути
+GET http://localhost:8082/api/v1/tasks?status=IN_TRANSIT&currentStage=CONFIRM_DELIVERY
+Authorization: Bearer {{rinat_token}}
+
+### 24. Задачи, ожидающие курьера
+GET http://localhost:8082/api/v1/tasks?status=WAITING_FOR_COURIER
+Authorization: Bearer {{rinat_token}}
+
+### 25. Завершённые доставки
+GET http://localhost:8082/api/v1/tasks?status=COMPLETED
+Authorization: Bearer {{rinat_token}}
+
+### 26. Статистика задач — ADMIN, 200
+GET http://localhost:8082/api/v1/tasks/statistics
+Authorization: Bearer {{admin_token}}
+
+### 27. Статистика задач — USER, 403
+GET http://localhost:8082/api/v1/tasks/statistics
+Authorization: Bearer {{rinat_token}}
+
+### 28. Остановившиеся задачи — ADMIN; выбрать retry_task_id из FAILED или COURIER_NOT_FOUND
+GET http://localhost:8082/api/v1/tasks?status=FAILED
+Authorization: Bearer {{admin_token}}
+
+> {% if (response.body.content.length > 0) client.global.set("retry_task_id", response.body.content[0].id); %}
+
+### 29. Задачи, для которых истёк срок поиска курьера — ADMIN
+GET http://localhost:8082/api/v1/tasks?status=COURIER_NOT_FOUND
+Authorization: Bearer {{admin_token}}
+
+> {% if (response.body.content.length > 0) client.global.set("retry_task_id", response.body.content[0].id); %}
+
+### 30. Повтор задачи — ADMIN: 202; неподходящий статус или противоречивые данные — 409
+POST http://localhost:8082/api/v1/tasks/{{retry_task_id}}/retry
+Authorization: Bearer {{admin_token}}
+
+### 31. Повтор задачи — USER, 403
+POST http://localhost:8082/api/v1/tasks/{{task_id}}/retry
+Authorization: Bearer {{rinat_token}}
+
+### 32. Повтор отсутствующей задачи — ADMIN, 404
+POST http://localhost:8082/api/v1/tasks/00000000-0000-0000-0000-000000000000/retry
+Authorization: Bearer {{admin_token}}

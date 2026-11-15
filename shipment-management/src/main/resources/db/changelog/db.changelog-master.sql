@@ -34,3 +34,34 @@ CREATE TABLE shipment_events (
 );
 
 CREATE INDEX idx_shipment_events_history ON shipment_events (shipment_id, created_at, id);
+
+--changeset logistics:002-create-outbox
+CREATE TABLE outbox_messages (
+    id UUID PRIMARY KEY,
+    shipment_id UUID NOT NULL UNIQUE REFERENCES shipments (id),
+    payload TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL,
+    published_at TIMESTAMPTZ
+);
+
+CREATE INDEX idx_outbox_messages_pending ON outbox_messages (created_at, id)
+    WHERE published_at IS NULL;
+
+--changeset logistics:003-add-processing-event-sequence
+ALTER TABLE shipments
+    ADD COLUMN last_processing_sequence BIGINT NOT NULL DEFAULT 0 CHECK (last_processing_sequence >= 0);
+
+ALTER TABLE shipment_events
+    ADD COLUMN processing_sequence BIGINT NOT NULL DEFAULT 0 CHECK (processing_sequence >= 0);
+
+DROP INDEX idx_shipment_events_history;
+CREATE INDEX idx_shipment_events_history
+    ON shipment_events (shipment_id, processing_sequence, created_at, id);
+
+--changeset logistics:004-add-external-shipment-identity
+ALTER TABLE shipments
+    ADD COLUMN source_id VARCHAR(64),
+    ADD COLUMN source_message_id UUID,
+    ADD CONSTRAINT chk_shipments_external_identity
+        CHECK ((source_id IS NULL) = (source_message_id IS NULL)),
+    ADD CONSTRAINT uq_shipments_external_identity UNIQUE (source_id, source_message_id);

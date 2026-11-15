@@ -32,17 +32,26 @@ public class ShipmentEventEntity {
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;
 
+    @Column(name = "processing_sequence", nullable = false)
+    private long processingSequence;
+
     protected ShipmentEventEntity() {
     }
 
     public ShipmentEventEntity(UUID id, UUID shipmentId, String eventType,
                                ShipmentStatus status, String details, Instant createdAt) {
+        this(id, shipmentId, eventType, status, details, createdAt, 0);
+    }
+
+    public ShipmentEventEntity(UUID id, UUID shipmentId, String eventType,
+                               ShipmentStatus status, String details, Instant createdAt, long processingSequence) {
         this.id = id;
         this.shipmentId = shipmentId;
         this.eventType = eventType;
         this.status = status;
         this.details = details;
         this.createdAt = createdAt;
+        this.processingSequence = processingSequence;
     }
 
     public UUID getId() {

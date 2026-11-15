@@ -15,6 +15,10 @@
       {
         "name": "ADMIN",
         "description": "All shipments and administration"
+      },
+      {
+        "name": "COURIER_READER",
+        "description": "Service access to available couriers"
       }
     ]
   },
@@ -61,13 +65,43 @@
         "http://localhost:5173"
       ],
       "attributes": {
-        "pkce.code.challenge.method": "S256"
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "+"
       },
       "defaultClientScopes": [
         "basic",
         "roles",
         "profile",
         "email"
+      ],
+      "protocolMappers": [
+        {
+          "name": "logistics-api-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.custom.audience": "logistics-api",
+            "access.token.claim": "true",
+            "id.token.claim": "false"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "shipment-processing-service",
+      "name": "Shipment processing service",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "${PROCESSING_CLIENT_SECRET}",
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "fullScopeAllowed": true,
+      "defaultClientScopes": [
+        "basic",
+        "roles"
       ],
       "protocolMappers": [
         {
@@ -143,6 +177,14 @@
           "value": "${DEMO_USER_PASSWORD}",
           "temporary": false
         }
+      ]
+    },
+    {
+      "username": "service-account-shipment-processing-service",
+      "enabled": true,
+      "serviceAccountClientId": "shipment-processing-service",
+      "realmRoles": [
+        "COURIER_READER"
       ]
     }
   ]
